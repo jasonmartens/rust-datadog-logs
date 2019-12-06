@@ -6,9 +6,19 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-#[dependencies]
-#rdkafka = "0.17.0"
+[dependencies]
+futures = "0.3.1"
+clap = "2.33.0"
+log = "0.4.8"
+chrono = "0.4.10"
+env_logger = "0.7.1"
+tokio = { version = "0.2", features = ["full"] }
+rand = "0.7.2"
 
 [dependencies.rdkafka]
 version = "0.22"
+features = ["cmake-build"]
+
+[dependencies.rdkafka-sys]
+version = "1.2.1"
 features = ["cmake-build"]
