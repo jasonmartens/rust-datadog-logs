@@ -13,7 +13,7 @@ use rdkafka::consumer::Consumer;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::Message;
 use rdkafka::message::OwnedMessage;
-use serde_json::{Error, Value};
+use serde_json::{Error, Value, json};
 use tokio::runtime::current_thread;
 
 use crate::example_utils::setup_logger;
@@ -21,13 +21,44 @@ use crate::example_utils::setup_logger;
 mod example_utils;
 
 // Emulates an expensive, synchronous computation.
-fn expensive_computation<'a>(msg: OwnedMessage) -> String {
+fn expensive_computation<'a>(dd_api_key: &str, msg: OwnedMessage) -> String {
+    let url = format!("https://http-intake.logs.datadoghq.com/v1/input/{}?ddtags=env:development", dd_api_key);
     match msg.payload_view::<str>() {
         Some(Ok(payload)) => {
             let parsed: Result<Value, Error> = serde_json::from_str(payload);
             match parsed {
-                Ok(json) => {
-                    format!("Payload timestamp is {} for offset {}", json["@timestamp"], msg.offset())
+                Ok(parsedJson) => {
+                    let message_json = match parsedJson["@timestamp"].as_f64() {
+                        Some(timestamp) => {
+                            let dd_timestamp = (timestamp * 1000.0) as i32;
+                            let mut new_json = parsedJson.clone();
+                            new_json["@timestamp"] = json!(dd_timestamp);
+                            new_json
+                        }
+                        None => {
+                            parsedJson
+                        }
+                    };
+                    let result: String = match message_json.as_str() {
+                        Some(message) => {
+                            let client = reqwest::Client::new();
+                            let res = client.post(url).body(message).send();
+                            let x: String = match res {
+                                Ok(response) => {
+                                    format!("Got response: {}", response.status())
+                                }
+                                Err(e) => {
+                                    format!("Got error from http request: {}", e.to_string())
+                                }
+                            };
+                            x
+                        }
+                        None => {
+                            format!("Failed to convert the json payload to a string")
+                        }
+                    };
+                    result
+//                    format!("Payload timestamp is {} for offset {}", parsedJson["@timestamp"], msg.offset())
                 }
                 Err(err) => format!("Failed to parse json. Error: {}", err)
             }
@@ -44,7 +75,7 @@ fn expensive_computation<'a>(msg: OwnedMessage) -> String {
 // Moving each message from one stage of the pipeline to next one is handled by the event loop,
 // that runs on a single thread. The expensive CPU-bound computation is handled by the `ThreadPool`,
 // without blocking the event loop.
-fn run_async_processor(brokers: &str, group_id: &str, input_topic: &str) {
+fn run_async_processor(dd_api_key: &str, brokers: &str, group_id: &str, input_topic: &str) {
     // Create the `StreamConsumer`, to receive the messages from the topic in form of a `Stream`.
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", group_id)
@@ -91,7 +122,7 @@ fn run_async_processor(brokers: &str, group_id: &str, input_topic: &str) {
             let owned_message = borrowed_message.detach();
             let message_future = lazy(move || {
                 // The body of this closure will be executed in the thread pool.
-                let computation_result = expensive_computation(owned_message);
+                let computation_result = expensive_computation(dd_api_key, owned_message);
                 info!("Computation result: {}", computation_result);
                 Ok(())
             });
@@ -108,6 +139,13 @@ fn main() {
     let matches = App::new("Async example")
         .version(option_env!("CARGO_PKG_VERSION").unwrap_or(""))
         .about("Asynchronous computation example")
+        .arg(
+            Arg::with_name("dd-api-key")
+                .short("api")
+                .long("api-key")
+                .help("Datadog API key")
+                .takes_value(true)
+        )
         .arg(
             Arg::with_name("brokers")
                 .short("b")
@@ -141,9 +179,10 @@ fn main() {
 
     setup_logger(true, matches.value_of("log-conf"));
 
+    let dd_api_key = matches.value_of("dd-api-key").unwrap();
     let brokers = matches.value_of("brokers").unwrap();
     let group_id = matches.value_of("group-id").unwrap();
     let input_topic = matches.value_of("input-topic").unwrap();
 
-    run_async_processor(brokers, group_id, input_topic);
+    run_async_processor(dd_api_key, brokers, group_id, input_topic);
 }
