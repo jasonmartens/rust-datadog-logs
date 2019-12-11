@@ -13,16 +13,31 @@ use rdkafka::consumer::Consumer;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::Message;
 use rdkafka::message::OwnedMessage;
-use serde_json::{Error, Value, json};
+use serde_json::{Error, json, Value};
 use tokio::runtime::current_thread;
 
 use crate::example_utils::setup_logger;
 
 mod example_utils;
 
+fn send_log_message(message: String, client: reqwest::Client, url: &str) -> String {
+    let response = client
+        .post(url)
+        .header("content-type", "application/json")
+        .body(message.to_string())
+        .send();
+    match response {
+        Ok(response) => {
+            format!("Got response: {}", response.status())
+        }
+        Err(e) => {
+            format!("Got error from http request: {}", e.to_string())
+        }
+    }
+}
+
 // Emulates an expensive, synchronous computation.
-fn expensive_computation<'a>(dd_api_key: String, msg: OwnedMessage) -> String {
-    let url = format!("https://http-intake.logs.datadoghq.com/v1/input/{}?ddtags=env:development", dd_api_key);
+fn expensive_computation<'a>(url: &str, msg: OwnedMessage) -> String {
     match msg.payload_view::<str>() {
         Some(Ok(payload)) => {
             let parsed: Result<Value, Error> = serde_json::from_str(payload);
@@ -42,20 +57,7 @@ fn expensive_computation<'a>(dd_api_key: String, msg: OwnedMessage) -> String {
                     let result = match message_json {
                         Some(message) => {
                             let client = reqwest::Client::new();
-                            let res = client
-                                .post(&url)
-                                .header("content-type", "application/json")
-                                .body(message.to_string())
-                                .send();
-                            let x: String = match res {
-                                Ok(response) => {
-                                    format!("Got response: {}", response.status())
-                                }
-                                Err(e) => {
-                                    format!("Got error from http request: {}", e.to_string())
-                                }
-                            };
-                            x
+                            send_log_message(message.to_string(), client, url)
                         }
                         None => {
                             format!("Failed to convert the json payload to a string")
@@ -79,7 +81,7 @@ fn expensive_computation<'a>(dd_api_key: String, msg: OwnedMessage) -> String {
 // Moving each message from one stage of the pipeline to next one is handled by the event loop,
 // that runs on a single thread. The expensive CPU-bound computation is handled by the `ThreadPool`,
 // without blocking the event loop.
-fn run_async_processor(dd_api_key: String, brokers: &str, group_id: &str, input_topic: &str) {
+fn run_async_processor(url: &'static str, brokers: &str, group_id: &str, input_topic: &str) {
     // Create the `StreamConsumer`, to receive the messages from the topic in form of a `Stream`.
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", group_id)
@@ -103,7 +105,6 @@ fn run_async_processor(dd_api_key: String, brokers: &str, group_id: &str, input_
 
     // Use the current thread as IO thread to drive consumer and producer.
     let mut io_thread = current_thread::Runtime::new().unwrap();
-//    let io_thread_handle = io_thread.handle();
 
     // Create the outer pipeline on the message stream.
     let stream_processor = consumer
@@ -124,10 +125,9 @@ fn run_async_processor(dd_api_key: String, brokers: &str, group_id: &str, input_
             // Borrowed messages can't outlive the consumer they are received from, so they need to
             // be owned in order to be sent to a separate thread.
             let owned_message = borrowed_message.detach();
-            let api_key = dd_api_key.clone();
             let message_future = lazy(move || {
                 // The body of this closure will be executed in the thread pool.
-                let computation_result = expensive_computation(api_key, owned_message);
+                let computation_result = expensive_computation(&url, owned_message);
                 info!("Computation result: {}", computation_result);
                 Ok(())
             });
@@ -188,6 +188,9 @@ fn main() {
     let brokers = matches.value_of("brokers").unwrap();
     let group_id = matches.value_of("group-id").unwrap();
     let input_topic = matches.value_of("input-topic").unwrap();
+    let url = format!("https://http-intake.logs.datadoghq.com/v1/input/{}?ddtags=env:development", dd_api_key);
+    // https://stackoverflow.com/questions/23975391/how-to-convert-a-string-into-a-static-str
+    let static_url = Box::leak(url.into_boxed_str());
 
-    run_async_processor(dd_api_key.to_owned(), brokers, group_id, input_topic);
+    run_async_processor(static_url, brokers, group_id, input_topic);
 }
