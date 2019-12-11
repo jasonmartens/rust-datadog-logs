@@ -21,7 +21,7 @@ use crate::example_utils::setup_logger;
 mod example_utils;
 
 // Emulates an expensive, synchronous computation.
-fn expensive_computation<'a>(dd_api_key: &str, msg: OwnedMessage) -> String {
+fn expensive_computation<'a>(dd_api_key: String, msg: OwnedMessage) -> String {
     let url = format!("https://http-intake.logs.datadoghq.com/v1/input/{}?ddtags=env:development", dd_api_key);
     match msg.payload_view::<str>() {
         Some(Ok(payload)) => {
@@ -33,16 +33,16 @@ fn expensive_computation<'a>(dd_api_key: &str, msg: OwnedMessage) -> String {
                             let dd_timestamp = (timestamp * 1000.0) as i32;
                             let mut new_json = parsedJson.clone();
                             new_json["@timestamp"] = json!(dd_timestamp);
-                            new_json
+                            Some(new_json)
                         }
                         None => {
-                            parsedJson
+                            None
                         }
                     };
-                    let result: String = match message_json.as_str() {
+                    let result = match message_json {
                         Some(message) => {
                             let client = reqwest::Client::new();
-                            let res = client.post(url).body(message).send();
+                            let res = client.post(&url).body(message.to_string()).send();
                             let x: String = match res {
                                 Ok(response) => {
                                     format!("Got response: {}", response.status())
@@ -75,7 +75,7 @@ fn expensive_computation<'a>(dd_api_key: &str, msg: OwnedMessage) -> String {
 // Moving each message from one stage of the pipeline to next one is handled by the event loop,
 // that runs on a single thread. The expensive CPU-bound computation is handled by the `ThreadPool`,
 // without blocking the event loop.
-fn run_async_processor(dd_api_key: &str, brokers: &str, group_id: &str, input_topic: &str) {
+fn run_async_processor(dd_api_key: String, brokers: &str, group_id: &str, input_topic: &str) {
     // Create the `StreamConsumer`, to receive the messages from the topic in form of a `Stream`.
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", group_id)
@@ -120,9 +120,10 @@ fn run_async_processor(dd_api_key: &str, brokers: &str, group_id: &str, input_to
             // Borrowed messages can't outlive the consumer they are received from, so they need to
             // be owned in order to be sent to a separate thread.
             let owned_message = borrowed_message.detach();
+            let api_key = dd_api_key.clone();
             let message_future = lazy(move || {
                 // The body of this closure will be executed in the thread pool.
-                let computation_result = expensive_computation(dd_api_key, owned_message);
+                let computation_result = expensive_computation(api_key, owned_message);
                 info!("Computation result: {}", computation_result);
                 Ok(())
             });
@@ -184,5 +185,5 @@ fn main() {
     let group_id = matches.value_of("group-id").unwrap();
     let input_topic = matches.value_of("input-topic").unwrap();
 
-    run_async_processor(dd_api_key, brokers, group_id, input_topic);
+    run_async_processor(dd_api_key.to_owned(), brokers, group_id, input_topic);
 }
