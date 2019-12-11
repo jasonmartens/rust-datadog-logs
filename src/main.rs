@@ -42,7 +42,11 @@ fn expensive_computation<'a>(dd_api_key: String, msg: OwnedMessage) -> String {
                     let result = match message_json {
                         Some(message) => {
                             let client = reqwest::Client::new();
-                            let res = client.post(&url).body(message.to_string()).send();
+                            let res = client
+                                .post(&url)
+                                .header("content-type", "application/json")
+                                .body(message.to_string())
+                                .send();
                             let x: String = match res {
                                 Ok(response) => {
                                     format!("Got response: {}", response.status())
