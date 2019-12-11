@@ -27,11 +27,11 @@ fn expensive_computation<'a>(dd_api_key: String, msg: OwnedMessage) -> String {
         Some(Ok(payload)) => {
             let parsed: Result<Value, Error> = serde_json::from_str(payload);
             match parsed {
-                Ok(parsedJson) => {
-                    let message_json = match parsedJson["@timestamp"].as_f64() {
+                Ok(parsed_json) => {
+                    let message_json = match parsed_json["@timestamp"].as_f64() {
                         Some(timestamp) => {
-                            let dd_timestamp = (timestamp * 1000.0) as i32;
-                            let mut new_json = parsedJson.clone();
+                            let dd_timestamp = (timestamp * 1000.0) as i64;
+                            let mut new_json = parsed_json.clone();
                             new_json["@timestamp"] = json!(dd_timestamp);
                             Some(new_json)
                         }
